@@ -21,7 +21,7 @@ def get_atom_features(atom,
                                'B', 'V', 'K', 'Tl', 'Yb', 'Sb', 'Sn', 'Ag', 'Pd', 'Co', 'Se', 'Ti', 'Zn', 'Li', 'Ge',
                                'Cu', 'Au', 'Ni', 'Cd', 'In', 'Mn', 'Zr', 'Cr', 'Pt', 'Hg', 'Pb', 'Unknown']
 
-    if hydrogens_implicit == False:
+    if not hydrogens_implicit:
         permitted_list_of_atoms = ['H'] + permitted_list_of_atoms
 
     atom_type_enc = one_hot_encoding(str(atom.GetSymbol()), permitted_list_of_atoms)
@@ -37,13 +37,13 @@ def get_atom_features(atom,
 
     atom_feature_vector = atom_type_enc + n_heavy_neighbors_enc + formal_charge_enc + hybridisation_type_enc + is_in_a_ring_enc + is_aromatic_enc + atomic_mass_scaled + vdw_radius_scaled + covalent_radius_scaled
 
-    if use_chirality == True:
+    if use_chirality:
         chirality_type_enc = one_hot_encoding(str(atom.GetChiralTag()),
                                               ["CHI_UNSPECIFIED", "CHI_TETRAHEDRAL_CW", "CHI_TETRAHEDRAL_CCW",
                                                "CHI_OTHER"])
         atom_feature_vector += chirality_type_enc
 
-    if hydrogens_implicit == True:
+    if hydrogens_implicit:
         n_hydrogens_enc = one_hot_encoding(int(atom.GetTotalNumHs()), [0, 1, 2, 3, 4, "MoreThanFour"])
         atom_feature_vector += n_hydrogens_enc
 
@@ -59,7 +59,7 @@ def get_bond_features(bond,
     bond_is_in_ring_enc = [int(bond.IsInRing())]
     bond_feature_vector = bond_type_enc + bond_is_conj_enc + bond_is_in_ring_enc
 
-    if use_stereochemistry == True:
+    if use_stereochemistry:
         stereo_type_enc = one_hot_encoding(str(bond.GetStereo()), ["STEREOZ", "STEREOE", "STEREOANY", "STEREONONE"])
         bond_feature_vector += stereo_type_enc
 
