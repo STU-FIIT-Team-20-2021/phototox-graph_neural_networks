@@ -21,10 +21,10 @@ from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 
 
-def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_name: str, net: nn.Module = None):
+def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_name: str, net: nn.Module = None, pretrain: bool = False):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     if net is None:
-        net = GraphGNNModel(79, config['c_hidden_soft'], config['c_hidden_soft'], dp_rate_linear=config['drop_rate_soft_dense'],
+        net = GraphGNNModel(80, config['c_hidden_soft'], config['c_hidden_soft'], dp_rate_linear=config['drop_rate_soft_dense'],
                             dp_gnn=config['drop_rate_soft'],**config)
     net.to(device)
 
@@ -40,7 +40,8 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                             })
 
     train_net(net, device, epochs=250, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
-              df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'])
+              df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'],
+              pretrain=pretrain)
 
 
 def train_net(net,
@@ -56,6 +57,7 @@ def train_net(net,
               experiment = None,
               pos_weight: float = 1.0,
               early_stopping_patience: int = 5,
+              pretrain: bool = False,
               l1_lambda: float = 0):
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -123,7 +125,8 @@ def train_net(net,
                     if net.n_classes == 1:
                         pred = pred.squeeze(dim=-1)
 
-                    pred.requires_grad = True
+                    if not pretrain:
+                        pred.requires_grad = True
                     loss = criterion(pred, batch.y)
 
 

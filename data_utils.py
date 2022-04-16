@@ -1,4 +1,5 @@
 from rdkit import Chem
+from rdkit.Chem import AllChem
 from rdkit.Chem.rdmolops import GetAdjacencyMatrix
 import torch
 import numpy as np
@@ -29,13 +30,18 @@ def get_atom_features(atom,
     formal_charge_enc = one_hot_encoding(int(atom.GetFormalCharge()), [-3, -2, -1, 0, 1, 2, 3, "Extreme"])
     hybridisation_type_enc = one_hot_encoding(str(atom.GetHybridization()),
                                               ["S", "SP", "SP2", "SP3", "SP3D", "SP3D2", "OTHER"])
+
     is_in_a_ring_enc = [int(atom.IsInRing())]
     is_aromatic_enc = [int(atom.GetIsAromatic())]
-    atomic_mass_scaled = [float((atom.GetMass() - 10.812) / 116.092)]
-    vdw_radius_scaled = [float((Chem.GetPeriodicTable().GetRvdw(atom.GetAtomicNum()) - 1.5) / 0.6)]
-    covalent_radius_scaled = [float((Chem.GetPeriodicTable().GetRcovalent(atom.GetAtomicNum()) - 0.64) / 0.76)]
+    atomic_mass_scaled = [np.log(float((atom.GetMass())))]
+    vdw_radius_scaled = [float((Chem.GetPeriodicTable().GetRvdw(atom.GetAtomicNum())))]
+    covalent_radius_scaled = [float((Chem.GetPeriodicTable().GetRcovalent(atom.GetAtomicNum())))]
+    # gasteiger_charge = [float(atom.GetProp("_GasteigerCharge"))]
+    explicit_valence = [float(atom.GetExplicitValence())]
 
-    atom_feature_vector = atom_type_enc + n_heavy_neighbors_enc + formal_charge_enc + hybridisation_type_enc + is_in_a_ring_enc + is_aromatic_enc + atomic_mass_scaled + vdw_radius_scaled + covalent_radius_scaled
+    atom_feature_vector = atom_type_enc + n_heavy_neighbors_enc + formal_charge_enc + hybridisation_type_enc + \
+                          is_in_a_ring_enc + is_aromatic_enc + atomic_mass_scaled + vdw_radius_scaled + \
+                          covalent_radius_scaled + explicit_valence
 
     if use_chirality:
         chirality_type_enc = one_hot_encoding(str(atom.GetChiralTag()),
@@ -51,7 +57,7 @@ def get_atom_features(atom,
 
 
 def get_bond_features(bond,
-                      use_stereochemistry=True):
+                      use_stereochemistry=False):
     permitted_list_of_bond_types = [Chem.rdchem.BondType.SINGLE, Chem.rdchem.BondType.DOUBLE,
                                     Chem.rdchem.BondType.TRIPLE, Chem.rdchem.BondType.AROMATIC]
     bond_type_enc = one_hot_encoding(bond.GetBondType(), permitted_list_of_bond_types)
@@ -82,6 +88,7 @@ def create_data_list(x_smiles, y):
 
         X = np.zeros((n_nodes, n_node_features))
 
+        AllChem.ComputeGasteigerCharges(mol)
         for atom in mol.GetAtoms():
             X[atom.GetIdx(), :] = get_atom_features(atom)
 

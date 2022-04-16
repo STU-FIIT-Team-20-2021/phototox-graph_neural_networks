@@ -46,17 +46,17 @@ config_default = {
     'c_hidden_hard': 256,
     'optim': "Adam",
     'type': 'GAT',
-    'pos_weight': 1.5,
+    'pos_weight': 1,
     'lr': 1e-3,
     'batch_size': 1024
 }
 
-# setup_training(config_default, './outputs/test_run', pre_df, wandb_name='test_run')
-
+setup_training(config_default, './outputs/test_run', pre_df, wandb_name='test_run', pretrain=True)
+wandb.finish()
 pre_trained = glob.glob('./outputs/test_run/*.pth')
 last = max(pre_trained, key=os.path.getctime)
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-net = GraphGNNModel(79, config_default['c_hidden_soft'], config_default['c_hidden_soft'], dp_rate_linear=config_default['drop_rate_soft_dense'],
+net = GraphGNNModel(80, config_default['c_hidden_soft'], config_default['c_hidden_soft'], dp_rate_linear=config_default['drop_rate_soft_dense'],
                             dp_gnn=config_default['drop_rate_soft'],**config_default)
 net.load_state_dict(torch.load(last, map_location=device))
 
