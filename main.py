@@ -2,15 +2,11 @@ import glob
 
 import torch
 import torch.nn as nn
-from ray import tune
 import optuna
 import wandb
 
 from models import GraphGNNModel
 from train import setup_training
-
-
-import pytorch_lightning as pl
 
 from sklearn.model_selection import train_test_split
 
@@ -28,8 +24,6 @@ warnings.filterwarnings("ignore")
 RDLogger.DisableLog("rdApp.*")
 
 np.random.seed(42)
-pl.seed_everything(42)
-
 
 
 df = pd.read_csv('./alvadesc_full_cleaned.csv', index_col=0)
@@ -42,17 +36,6 @@ pre_df = pre_df.drop_duplicates(subset=["Smiles"], keep=False)
 df = df[['Phototoxic', 'Smiles']]
 pre_df = pre_df[['Phototoxic', 'Smiles']]
 
-
-config = {
-    'c_hidden_soft': tune.randint(256, 1024),
-    'layers_soft': tune.randint(3, 10),
-    'drop_rate_soft_dense': tune.quniform(0.1, 0.5, 0.1),
-    'drop_rate_soft': tune.quniform(0.1, 0.5, 0.1),
-    'drop_rate_hard_dense': tune.quniform(0.1, 0.5, 0.1),
-    'optim': tune.choice(["Adam", "RMSprop", "SGD"]),
-    'type': tune.choice(["GAT", "GCN", "GraphConv"]),
-    'lr': tune.loguniform(1e-5, 1e-1),
-}
 
 config_default = {
     'c_hidden_soft': 256,
@@ -90,7 +73,7 @@ for param in net.parameters():
 
 list(net.children())[0].head = new_head
 
-setup_training(config_default, './outputs/test_run_strong', pre_df, wandb_name='test_run_strong', net=net)
+setup_training(config_default, './outputs/test_run_strong', df, wandb_name='test_run_strong', net=net)
 wandb.finish()
 
 def setup(trial: optuna.trial.Trial):

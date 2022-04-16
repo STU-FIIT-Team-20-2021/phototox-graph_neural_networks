@@ -26,8 +26,10 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
     if net is None:
         net = GraphGNNModel(79, config['c_hidden_soft'], config['c_hidden_soft'], dp_rate_linear=config['drop_rate_soft_dense'],
                             dp_gnn=config['drop_rate_soft'],**config)
+    net.to(device)
 
-    os.mkdir(f'./outputs/{wandb_name}')
+    if not os.path.exists(f'./outputs/{wandb_name}'):
+        os.mkdir(f'./outputs/{wandb_name}')
 
     experiment = wandb.init(project='TP-GNNs', resume='allow', name=wandb_name,
                             config={
@@ -37,7 +39,7 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                                 "save_checkpoint": save_checkpoint,
                             })
 
-    train_net(net, device, epochs=10, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
+    train_net(net, device, epochs=250, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
               df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'])
 
 
@@ -53,6 +55,7 @@ def train_net(net,
               dir_checkpoint: str = 'outputs',
               experiment = None,
               pos_weight: float = 1.0,
+              early_stopping_patience: int = 5,
               l1_lambda: float = 0):
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -84,11 +87,11 @@ def train_net(net,
     ''')
 
     if opt == 'Adam':
-        optimizer = optim.Adam(net.parameters(), lr=learning_rate)
+        optimizer = optim.Adam([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
     elif opt == 'RMSProp':
-        optimizer = optim.RMSprop(net.parameters(), lr=learning_rate)
+        optimizer = optim.RMSprop([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
     elif opt == 'SGD':
-        optimizer = optim.SGD(net.parameters(), lr=learning_rate)
+        optimizer = optim.SGD([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
 
     # TODO: Decide if we want this
     # scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
@@ -102,6 +105,7 @@ def train_net(net,
 
     # 5. Begin training
     prev_best = np.inf
+    epochs_since_improvement = 0
     for epoch in range(epochs):
         train_loss_total = 0
         val_loss_total = 0
@@ -110,6 +114,7 @@ def train_net(net,
         epoch_score = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='mol') as pbar:
             for batch in iter(train_loader):
+                batch = batch.to(device=device)
                 x, edge_index, batch_idx = batch.x, batch.edge_index, batch.batch
 
                 with torch.cuda.amp.autocast(enabled=amp):
@@ -118,6 +123,7 @@ def train_net(net,
                     if net.n_classes == 1:
                         pred = pred.squeeze(dim=-1)
 
+                    pred.requires_grad = True
                     loss = criterion(pred, batch.y)
 
 
@@ -152,6 +158,7 @@ def train_net(net,
                 with torch.no_grad():
                     val_sensitivity_total, val_specificity_total = 0, 0
                     for batch in iter(val_loader):
+                        batch = batch.to(device=device)
                         x, edge_index, batch_idx = batch.x, batch.edge_index, batch.batch
 
                         with torch.cuda.amp.autocast(enabled=amp):
@@ -169,24 +176,24 @@ def train_net(net,
 
                         val_loss_total += val_loss.item()
 
-                        preds = (torch.sigmoid(preds).data.float() > 0.5).float()
+                        preds = (torch.sigmoid(preds).data.float() > 0.5).float().cpu().numpy()
                         if count == 0:
-                            pred, true = preds, batch.y
+                            pred, true = preds, batch.y.data.cpu()
                             count += 1
                         else:
                             pred = np.concatenate((pred, preds), axis=0)
-                            true = torch.cat([true, batch.y])
+                            true = torch.cat([true, batch.y.data.cpu()])
 
                         try:
                             sensitivity = classification_report(y_true=batch.y.cpu().detach().numpy(),
-                                                                y_pred=preds.cpu().detach().numpy(), output_dict=True)[
+                                                                y_pred=preds, output_dict=True)[
                                 '1.0']['recall']
                         except KeyError:
                             sensitivity = 0
 
                         try:
                             specificity = classification_report(y_true=batch.y.cpu().detach().numpy(),
-                                                                y_pred=preds.cpu().detach().numpy(), output_dict=True)[
+                                                                y_pred=preds, output_dict=True)[
                                 '0.0']['recall']
                         except KeyError:
                             specificity = 0
@@ -204,13 +211,17 @@ def train_net(net,
             })
 
         # scheduler.step()
-
+        epochs_since_improvement += 1
         if save_checkpoint and val_loss < prev_best:
+            epochs_since_improvement = 0
             prev_best = val_loss
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             best_model = net
             torch.save(net.state_dict(), f'{dir_checkpoint}/checkpoint_epoch{epoch+1}.pth')
             logging.info(f'Checkpoint {epoch + 1} saved!')
+
+        if epochs_since_improvement > early_stopping_patience:
+            break
 
     best_model.eval()
 
@@ -219,6 +230,7 @@ def train_net(net,
 
         count = 0
         for batch in iter(test_loader):
+            batch = batch.to(device=device)
             x, edge_index, batch_idx = batch.x, batch.edge_index, batch.batch
 
             with torch.cuda.amp.autocast(enabled=amp):
@@ -230,24 +242,24 @@ def train_net(net,
             test_loss = criterion(preds, batch.y)
             test_loss_total += test_loss.item()
 
-            preds = (torch.sigmoid(preds).data.float() > 0.5).float()
+            preds = (torch.sigmoid(preds).data.float() > 0.5).float().cpu().numpy()
             if count == 0:
-                pred, true = preds, batch.y
+                pred, true = preds, batch.y.data.cpu()
                 count += 1
             else:
                 pred = np.concatenate((pred, preds), axis=0)
-                true = torch.cat([true, batch.y])
+                true = torch.cat([true, batch.y.data.cpu()])
 
             try:
                 sensitivity = classification_report(y_true=batch.y.cpu().detach().numpy(),
-                                                    y_pred=preds.cpu().detach().numpy(), output_dict=True)[
+                                                    y_pred=preds, output_dict=True)[
                     '1.0']['recall']
             except KeyError:
                 sensitivity = 0
 
             try:
                 specificity = classification_report(y_true=batch.y.cpu().detach().numpy(),
-                                                    y_pred=preds.cpu().detach().numpy(), output_dict=True)[
+                                                    y_pred=preds, output_dict=True)[
                     '0.0']['recall']
             except KeyError:
                 specificity = 0

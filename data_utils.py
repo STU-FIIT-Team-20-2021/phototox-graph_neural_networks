@@ -73,9 +73,6 @@ def create_data_list(x_smiles, y):
 
         mol = Chem.MolFromSmiles(smiles)
 
-        if mol is None:
-            continue
-
         n_nodes = mol.GetNumAtoms()
         n_edges = 2 * mol.GetNumBonds()
         unrelated_smiles = "O=O"
