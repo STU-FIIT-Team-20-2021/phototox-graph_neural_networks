@@ -55,6 +55,7 @@ class GraphGNNModel(nn.Module):
 
     def __init__(self, c_in, c_hidden, c_out, dp_rate_linear=0.5, dp_gnn=0.1, **kwargs):
         super().__init__()
+        self.trial = None
         self.n_classes=1
         self.GNN = GNNModel(c_in=c_in,
                             c_hidden=c_hidden,
@@ -68,6 +69,9 @@ class GraphGNNModel(nn.Module):
             nn.Dropout(dp_rate_linear),
             nn.Linear(256, 1)
         )
+
+    def start_trial(self, trial):
+        self.trial = trial
 
     def forward(self, x, edge_index, batch_idx):
         x = self.GNN(x, edge_index)

@@ -1,8 +1,10 @@
 import argparse
+import glob
 import logging
 import sys
 from pathlib import Path
 import os
+import optuna
 
 import torch
 import torch.nn as nn
@@ -39,9 +41,9 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                                 "save_checkpoint": save_checkpoint,
                             })
 
-    train_net(net, device, epochs=250, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
-              df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'],
-              pretrain=pretrain)
+    return train_net(net, device, epochs=250, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
+                     df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'],
+                     pretrain=pretrain)
 
 
 def train_net(net,
@@ -90,7 +92,7 @@ def train_net(net,
 
     if opt == 'Adam':
         optimizer = optim.Adam([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
-    elif opt == 'RMSProp':
+    elif opt == 'RMSprop':
         optimizer = optim.RMSprop([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
     elif opt == 'SGD':
         optimizer = optim.SGD([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
@@ -108,6 +110,7 @@ def train_net(net,
     # 5. Begin training
     prev_best = np.inf
     epochs_since_improvement = 0
+    val_sensitivities, val_specificities = [], []
     for epoch in range(epochs):
         train_loss_total = 0
         val_loss_total = 0
@@ -212,6 +215,12 @@ def train_net(net,
                 'val specificity': val_specificity_total/len(val_loader),
                 **histograms
             })
+            # val_sensitivities.append(val_sensitivity_total/len(val_loader))
+            # val_specificities.append(val_specificity_total/len(val_loader))
+            # if net.trial:
+            #     net.trial.report([np.array(val_sensitivities).mean() , np.array(val_specificities).mean()], epoch)
+            #     if net.trial.should_prune():
+            #         raise optuna.TrialPruned()
 
         # scheduler.step()
         epochs_since_improvement += 1
@@ -220,12 +229,13 @@ def train_net(net,
             prev_best = val_loss
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             best_model = net
-            torch.save(net.state_dict(), f'{dir_checkpoint}/checkpoint_epoch{epoch+1}.pth')
+            torch.save(net.state_dict(), f'{dir_checkpoint}/checkpoint.pth')
             logging.info(f'Checkpoint {epoch + 1} saved!')
 
         if epochs_since_improvement > early_stopping_patience:
             break
 
+    best_model.load_state_dict(torch.load(f'{dir_checkpoint}/checkpoint.pth', map_location=device))
     best_model.eval()
 
     with torch.no_grad():
@@ -237,7 +247,7 @@ def train_net(net,
             x, edge_index, batch_idx = batch.x, batch.edge_index, batch.batch
 
             with torch.cuda.amp.autocast(enabled=amp):
-                preds = net(x, edge_index, batch_idx)
+                preds = best_model(x, edge_index, batch_idx)
 
                 if net.n_classes == 1:
                     preds = preds.squeeze(dim=-1)
@@ -275,3 +285,4 @@ def train_net(net,
             'test sensitivity': test_sensitivity_total / len(test_loader),
             'test specificity': test_specificity_total / len(test_loader)
         })
+    return test_sensitivity_total / len(test_loader), test_specificity_total / len(test_loader)
