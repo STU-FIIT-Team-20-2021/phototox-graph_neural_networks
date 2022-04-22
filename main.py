@@ -15,8 +15,6 @@ import pandas as pd
 import warnings
 import os
 
-os.environ["PATH"] += r";C:\Users\Lukas\Anaconda3\envs\Halinkovic_GNNs"
-
 from rdkit import RDLogger
 
 
@@ -24,7 +22,6 @@ warnings.filterwarnings("ignore")
 RDLogger.DisableLog("rdApp.*")
 
 np.random.seed(42)
-
 
 df = pd.read_csv('./alvadesc_full_cleaned.csv', index_col=0)
 df = df.drop([345, 346], axis=0)
@@ -50,6 +47,11 @@ config_default = {
     'lr': 1e-3,
     'batch_size': 1024
 }
+
+
+def f1b_score(sensitivity, specificity, beta=0.5):
+    return (1 + beta ** 2) * (sensitivity * specificity) / (beta ** 2 * sensitivity + specificity)
+
 
 def train_model_both(trial: optuna.trial.Trial, config: dict):
     name = f"Optuna__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
@@ -112,13 +114,16 @@ def setup(trial: optuna.trial.Trial):
 
     sensitivity, specificity = train_model_both(trial, config)
 
-    return sensitivity, specificity
+    return f1b_score(sensitivity, specificity)
 
 
+if __name__ == "__main__":
+    study = optuna.create_study(
+        pruner=optuna.pruners.SuccessiveHalvingPruner(),
+        sampler=optuna.samplers.TPESampler(),
+        directions=["maximize"])
 
-
-study = optuna.create_study(pruner=optuna.pruners.SuccessiveHalvingPruner(), sampler=optuna.samplers.TPESampler(), directions=["maximize", "maximize"])
-study.optimize(setup, n_trials=100, timeout=None)
+    study.optimize(setup, n_trials=100, timeout=None)
 
 # print(f"Train accuracy: {100.0*result['train_acc']:4.2f}%")
 # print(f"Train sensitivity: {100.0*result['train_sensitivity']:4.2f}%")
