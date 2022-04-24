@@ -30,19 +30,19 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                             dp_gnn=config['drop_rate_soft'],**config)
     net.to(device)
 
-    if not os.path.exists(f'./outputs/{wandb_name}'):
-        os.mkdir(f'./outputs/{wandb_name}')
+    if not os.path.exists(f'./outputs/no_pretrain/{wandb_name}'):
+        os.mkdir(f'./outputs/no_pretrain/{wandb_name}')
 
-    experiment = wandb.init(project='TP-GNNs', resume='allow', name=wandb_name,
+    experiment = wandb.init(project='TP-GNNs', resume='allow', name=wandb_name, group='no_pretrain',
                             config={
                                 "learning_rate": config['lr'],
                                 "batch_size": config['batch_size'],
-                                "epochs": 250,
+                                "epochs": 500,
                                 "save_checkpoint": save_checkpoint,
                             })
 
-    return train_net(net, device, epochs=250, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
-                     df=df, opt=config['optim'], dir_checkpoint=f'./outputs/{wandb_name}', pos_weight=config['pos_weight'],
+    return train_net(net, device, epochs=500, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
+                     df=df, opt=config['optim'], dir_checkpoint=f'./outputs/no_pretrain/{wandb_name}', pos_weight=config['pos_weight'],
                      pretrain=pretrain)
 
 
@@ -66,8 +66,11 @@ def train_net(net,
     # experiment.watch(net, log_freq=10, log='all')
 
     data_list = create_data_list(df['Smiles'], df['Phototoxic'])
-    train, test = train_test_split(data_list, test_size=0.1, stratify=[t.y for t in data_list])
-    train, valid = train_test_split(train, test_size=0.15, stratify=[t.y for t in train])
+    if not pretrain:
+        train, test = train_test_split(data_list, test_size=0.2, stratify=[t.y for t in data_list], random_state=42)
+    else:
+        train, test = train_test_split(data_list, test_size=0.1, stratify=[t.y for t in data_list], random_state=42)
+    train, valid = train_test_split(train, test_size=0.15, stratify=[t.y for t in train], random_state=42)
 
     n_train = len(train)
     n_val = len(valid)
@@ -128,8 +131,8 @@ def train_net(net,
                     if net.n_classes == 1:
                         pred = pred.squeeze(dim=-1)
 
-                    if not pretrain:
-                        pred.requires_grad = True
+                    # if not pretrain:
+                    #     pred.requires_grad = True
                     loss = criterion(pred, batch.y)
 
 

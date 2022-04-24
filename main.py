@@ -38,18 +38,39 @@ pre_df = pre_df[['Phototoxic', 'Smiles']]
 
 
 config_default = {
-    'c_hidden_soft': 256,
-    'layers_soft': 3,
-    'drop_rate_soft_dense': 0.4,
-    'drop_rate_soft': 0.2,
-    'drop_rate_hard_dense': 0.4,
-    'c_hidden_hard': 256,
+    'c_hidden_soft': 234,
+    'layers_soft': 2,
+    'drop_rate_soft_dense': 0.18157566871830347,
+    'drop_rate_soft': 0.17834544408336056,
+    'drop_rate_hard_dense_1': 0.30640872696383925,
+    'drop_rate_hard_dense_2': 0.38842013955429855,
+    'dense_input_head': 256,
+    'dense_input_hidden': 128,
+    'pos_weight': 1.2686536617518058,
     'optim': "Adam",
-    'type': 'GAT',
-    'pos_weight': 1,
-    'lr': 1e-3,
-    'batch_size': 1024
+    'lr': 1.1804358785861437e-05,
+    'batch_size': 512
 }
+
+def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
+    name = f"Optuna__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+           f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
+           f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
+           f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
+    net = GraphGNNModel(80, config['c_hidden_soft'], config['c_hidden_soft'],
+                        dp_rate_linear=config['drop_rate_soft_dense'],
+                        dp_gnn=config['drop_rate_soft'], **config)
+
+    net.start_trial(trial)
+
+    try:
+        sensitivity, specificity = setup_training(config, f'./outputs/no_pretrain/Strong_{name}', df,
+                                                  wandb_name='Strong_'+name, net=net)
+        wandb.finish()
+    except optuna.TrialPruned:
+        raise optuna.TrialPruned()
+
+    return sensitivity, specificity
 
 def train_model_both(trial: optuna.trial.Trial, config: dict):
     name = f"Optuna__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
@@ -104,21 +125,31 @@ def setup(trial: optuna.trial.Trial):
         'drop_rate_hard_dense_2': trial.suggest_uniform('drop_rate_hard_dense_2', 0.05, 0.5),
         'dense_input_head': 2 ** a,
         'dense_input_hidden': 2 ** b,
-        'pos_weight': trial.suggest_uniform('pos_weight', 1.2, 2.5),
+        'pos_weight': trial.suggest_uniform('pos_weight', 0.8, 1.5),
         'optim': trial.suggest_categorical('optim', ["Adam", "RMSprop", "SGD"]),
-        'lr': trial.suggest_loguniform('lr', 1e-4, 1e-1),
-        'batch_size': trial.suggest_categorical('batch_size', [512, 1024])
+        'lr': trial.suggest_loguniform('lr', 1e-5, 1e-1),
+        'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256, 512])
     }
 
-    sensitivity, specificity = train_model_both(trial, config)
+    sensitivity, specificity = train_no_pretrain(trial, config)
 
     return sensitivity, specificity
 
 
+name = f"Optuna__chs={config_default['c_hidden_soft']}_ls={config_default['layers_soft']}_drsd={config_default['drop_rate_soft_dense']}_" \
+           f"drs={config_default['drop_rate_soft']}_drhd1={config_default['drop_rate_hard_dense_1']}_drhd2={config_default['drop_rate_hard_dense_2']}_" \
+           f"dih={config_default['dense_input_head']}_dihidden={config_default['dense_input_hidden']}_optim={config_default['optim']}_" \
+           f"lr={config_default['lr']}_batchsize={config_default['batch_size']}_posweight={config_default['pos_weight']}"
+net = GraphGNNModel(80, config_default['c_hidden_soft'], config_default['c_hidden_soft'],
+                    dp_rate_linear=config_default['drop_rate_soft_dense'],
+                    dp_gnn=config_default['drop_rate_soft'], **config_default)
 
 
-study = optuna.create_study(pruner=optuna.pruners.SuccessiveHalvingPruner(), sampler=optuna.samplers.TPESampler(), directions=["maximize", "maximize"])
-study.optimize(setup, n_trials=100, timeout=None)
+sensitivity, specificity = setup_training(config_default, f'./outputs/no_pretrain/Strong_{name}', df,
+                                          wandb_name='Strong_'+name, net=net)
+
+# study = optuna.create_study(pruner=optuna.pruners.SuccessiveHalvingPruner(), sampler=optuna.samplers.TPESampler(), directions=["maximize", "maximize"])
+# study.optimize(setup, n_trials=100, timeout=None)
 
 # print(f"Train accuracy: {100.0*result['train_acc']:4.2f}%")
 # print(f"Train sensitivity: {100.0*result['train_sensitivity']:4.2f}%")
