@@ -23,6 +23,10 @@ from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 
 
+def f1b_score(sensitivity, specificity, beta=0.5):
+    return (1 + beta ** 2) * (sensitivity * specificity) / (beta ** 2 * sensitivity + specificity)
+
+
 def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_name: str, net: nn.Module = None, pretrain: bool = False):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     if net is None:
@@ -218,12 +222,13 @@ def train_net(net,
                 'val specificity': val_specificity_total/len(val_loader),
                 **histograms
             })
-            # val_sensitivities.append(val_sensitivity_total/len(val_loader))
-            # val_specificities.append(val_specificity_total/len(val_loader))
-            # if net.trial:
-            #     net.trial.report([np.array(val_sensitivities).mean() , np.array(val_specificities).mean()], epoch)
-            #     if net.trial.should_prune():
-            #         raise optuna.TrialPruned()
+            val_sensitivities.append(val_sensitivity_total/len(val_loader))
+            val_specificities.append(val_specificity_total/len(val_loader))
+            if net.trial:
+                net.trial.report(f1b_score(sum(val_sensitivities)/len(val_sensitivities),
+                                           sum(val_specificities)/len(val_specificities)), epoch)
+                if net.trial.should_prune():
+                    raise optuna.TrialPruned()
 
         # scheduler.step()
         epochs_since_improvement += 1
