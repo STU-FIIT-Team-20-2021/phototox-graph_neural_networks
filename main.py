@@ -35,7 +35,7 @@ pre_df = pre_df[['Phototoxic', 'Smiles']]
 
 
 config_default = {
-    'c_hidden_soft': 234,
+    'c_hidden_soft': 256,
     'layers_soft': 2,
     'drop_rate_soft_dense': 0.18157566871830347,
     'drop_rate_soft': 0.17834544408336056,
@@ -43,9 +43,9 @@ config_default = {
     'drop_rate_hard_dense_2': 0.38842013955429855,
     'dense_input_head': 256,
     'dense_input_hidden': 128,
-    'pos_weight': 1.2686536617518058,
+    'pos_weight': 1,
     'optim': "Adam",
-    'lr': 1.1804358785861437e-05,
+    'lr': 1.1804358785861437e-04,
     'batch_size': 512
 }
 
@@ -53,7 +53,7 @@ def f1b_score(sensitivity, specificity, beta=0.5):
     return (1 + beta ** 2) * (sensitivity * specificity) / (beta ** 2 * sensitivity + specificity)
 
 def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
-    name = f"Optuna__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+    name = f"GATv2__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
            f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
            f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
            f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
@@ -74,13 +74,13 @@ def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
 
 
 def train_model_both(trial: optuna.trial.Trial, config: dict):
-    name = f"Optuna__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+    name = f"GATv2_no_freeze_f1loss__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
            f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
            f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
            f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
-    setup_training(config, f'./outputs/{name}', pre_df, wandb_name=name, pretrain=True)
+    setup_training(config, f'./GATv2/no_freeze_f1loss/{name}', pre_df, wandb_name=name, pretrain=True)
     wandb.finish()
-    pre_trained = glob.glob(f'./outputs/{name}/*.pth')
+    pre_trained = glob.glob(f'./GATv2/no_freeze_f1loss/{name}/*.pth')
     last = max(pre_trained, key=os.path.getctime)
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     net = GraphGNNModel(80, config['c_hidden_soft'], config['c_hidden_soft'],
@@ -96,15 +96,15 @@ def train_model_both(trial: optuna.trial.Trial, config: dict):
         nn.Linear(256, 1)
     )
 
-    for param in net.parameters():
-        param.requires_grad = False
+    # for param in net.parameters():
+    #     param.requires_grad = False
 
     list(net.children())[0].head = new_head
     net.start_trial(trial)
 
     try:
-        sensitivity, specificity = setup_training(config, f'./outputs/Strong_{name}', df,
-                                                  wandb_name=name, net=net)
+        sensitivity, specificity = setup_training(config, f'./GATv2/no_freeze_f1loss/Strong_{name}', df,
+                                                  wandb_name='Strong_'+name, net=net)
         wandb.finish()
     except optuna.TrialPruned:
         raise optuna.TrialPruned()
@@ -126,13 +126,13 @@ def setup(trial: optuna.trial.Trial):
         'drop_rate_hard_dense_2': trial.suggest_uniform('drop_rate_hard_dense_2', 0.05, 0.5),
         'dense_input_head': 2 ** a,
         'dense_input_hidden': 2 ** b,
-        'pos_weight': trial.suggest_uniform('pos_weight', 0.8, 1.5),
+        'pos_weight': trial.suggest_uniform('pos_weight', 1.1, 2.0),
         'optim': trial.suggest_categorical('optim', ["Adam", "RMSprop", "SGD"]),
         'lr': trial.suggest_loguniform('lr', 1e-5, 1e-1),
         'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256, 512])
     }
 
-    sensitivity, specificity = train_no_pretrain(trial, config)
+    sensitivity, specificity = train_model_both(trial, config)
 
     return f1b_score(sensitivity, specificity)
 

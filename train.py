@@ -34,10 +34,10 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                             dp_gnn=config['drop_rate_soft'],**config)
     net.to(device)
 
-    if not os.path.exists(f'./outputs/no_pretrain/{wandb_name}'):
-        os.mkdir(f'./outputs/no_pretrain/{wandb_name}')
+    if not os.path.exists(f'./GATv2/no_freeze_f1loss/{wandb_name}'):
+        os.mkdir(f'./GATv2/no_freeze_f1loss/{wandb_name}')
 
-    experiment = wandb.init(project='TP-GNNs', resume='allow', name=wandb_name, group='no_pretrain',
+    experiment = wandb.init(project='TP-GATv2', resume='allow', name=wandb_name, group='no_freeze_f1loss',
                             config={
                                 "learning_rate": config['lr'],
                                 "batch_size": config['batch_size'],
@@ -46,7 +46,7 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                             })
 
     return train_net(net, device, epochs=500, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
-                     df=df, opt=config['optim'], dir_checkpoint=f'./outputs/no_pretrain/{wandb_name}', pos_weight=config['pos_weight'],
+                     df=df, opt=config['optim'], dir_checkpoint=f'./GATv2/no_freeze_f1loss/{wandb_name}', pos_weight=config['pos_weight'],
                      pretrain=pretrain)
 
 
@@ -97,6 +97,9 @@ def train_net(net,
         Mixed Precision: {amp}
     ''')
 
+    if not pretrain:
+        learning_rate *= 10
+
     if opt == 'Adam':
         optimizer = optim.Adam([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
     elif opt == 'RMSprop':
@@ -138,6 +141,22 @@ def train_net(net,
                     # if not pretrain:
                     #     pred.requires_grad = True
                     loss = criterion(pred, batch.y)
+                    pred = (torch.sigmoid(pred).data.float() > 0.5).float().cpu().numpy()
+                    try:
+                        sensitivity = classification_report(y_true=batch.y.cpu().detach().numpy(),
+                                                            y_pred=pred, output_dict=True)[
+                            '1.0']['recall']
+                    except KeyError:
+                        sensitivity = 1e-8
+
+                    try:
+                        specificity = classification_report(y_true=batch.y.cpu().detach().numpy(),
+                                                            y_pred=pred, output_dict=True)[
+                            '0.0']['recall']
+                    except KeyError:
+                        specificity = 1e-8
+
+                    loss += (1 - f1b_score(sensitivity=sensitivity, specificity=specificity))
 
 
                 # l1_norm = 0
@@ -187,7 +206,7 @@ def train_net(net,
                         #               net.large_spring_2, net.fc1, net.fc2]:
                         #     l1_norm += l1_lambda * sum(p.abs().sum() for p in layer.parameters())
 
-                        val_loss_total += val_loss.item()
+
 
                         preds = (torch.sigmoid(preds).data.float() > 0.5).float().cpu().numpy()
                         if count == 0:
@@ -202,32 +221,37 @@ def train_net(net,
                                                                 y_pred=preds, output_dict=True)[
                                 '1.0']['recall']
                         except KeyError:
-                            sensitivity = 0
+                            sensitivity = 1e-8
 
                         try:
                             specificity = classification_report(y_true=batch.y.cpu().detach().numpy(),
                                                                 y_pred=preds, output_dict=True)[
                                 '0.0']['recall']
                         except KeyError:
-                            specificity = 0
+                            specificity = 1e-8
+
+                        val_loss += (1 - f1b_score(sensitivity=sensitivity, specificity=specificity))
+                        val_loss_total += val_loss.item()
 
                         val_sensitivity_total += sensitivity
                         val_specificity_total += specificity
 
-            experiment.log({
-                'train loss': train_loss_total/len(train_loader),
-                'val loss': val_loss_total/len(val_loader),
-                'learning rate': optimizer.param_groups[0]['lr'],
-                'val sensitivity': val_sensitivity_total/len(val_loader),
-                'val specificity': val_specificity_total/len(val_loader),
-                **histograms
-            })
+            if experiment is not None:
+                experiment.log({
+                    'train loss': train_loss_total/len(train_loader),
+                    'val loss': val_loss_total/len(val_loader),
+                    'learning rate': optimizer.param_groups[0]['lr'],
+                    'val sensitivity': val_sensitivity_total/len(val_loader),
+                    'val specificity': val_specificity_total/len(val_loader),
+                    **histograms
+                })
             val_sensitivities.append(val_sensitivity_total/len(val_loader))
             val_specificities.append(val_specificity_total/len(val_loader))
             if net.trial:
                 net.trial.report(f1b_score(sum(val_sensitivities)/len(val_sensitivities),
                                            sum(val_specificities)/len(val_specificities)), epoch)
                 if net.trial.should_prune():
+                    wandb.finish()
                     raise optuna.TrialPruned()
 
         # scheduler.step()
@@ -261,7 +285,6 @@ def train_net(net,
                     preds = preds.squeeze(dim=-1)
 
             test_loss = criterion(preds, batch.y)
-            test_loss_total += test_loss.item()
 
             preds = (torch.sigmoid(preds).data.float() > 0.5).float().cpu().numpy()
             if count == 0:
@@ -276,21 +299,25 @@ def train_net(net,
                                                     y_pred=preds, output_dict=True)[
                     '1.0']['recall']
             except KeyError:
-                sensitivity = 0
+                sensitivity = 1e-8
 
             try:
                 specificity = classification_report(y_true=batch.y.cpu().detach().numpy(),
                                                     y_pred=preds, output_dict=True)[
                     '0.0']['recall']
             except KeyError:
-                specificity = 0
+                specificity = 1e-8
+
+            test_loss += (1 - f1b_score(sensitivity=sensitivity, specificity=specificity))
+            test_loss_total += test_loss.item()
 
             test_sensitivity_total += sensitivity
             test_specificity_total += specificity
 
-        experiment.log({
-            'test loss': test_loss_total / len(test_loader),
-            'test sensitivity': test_sensitivity_total / len(test_loader),
-            'test specificity': test_specificity_total / len(test_loader)
-        })
+        if experiment is not None:
+            experiment.log({
+                'test loss': test_loss_total / len(test_loader),
+                'test sensitivity': test_sensitivity_total / len(test_loader),
+                'test specificity': test_specificity_total / len(test_loader)
+            })
     return test_sensitivity_total / len(test_loader), test_specificity_total / len(test_loader)
