@@ -15,6 +15,8 @@ def one_hot_encoding(x, permitted_list):
     return binary_encoding
 
 
+# Functions as a generator of node features for GNN dataset
+# Nodes in our task are represented by atoms (i.e. a vector a various atom descriptors - picked based on a consultation with a chemist)
 def get_atom_features(atom,
                       use_chirality=True,
                       hydrogens_implicit=True):
@@ -56,6 +58,8 @@ def get_atom_features(atom,
     return np.array(atom_feature_vector)
 
 
+# Bond features represent edge features for our GNN dataset
+# Again, a vector of descriptors the same as with nodes, but there's far fewer useful descriptors we can get about bonds
 def get_bond_features(bond,
                       use_stereochemistry=False):
     permitted_list_of_bond_types = [Chem.rdchem.BondType.SINGLE, Chem.rdchem.BondType.DOUBLE,
@@ -72,6 +76,8 @@ def get_bond_features(bond,
     return np.array(bond_feature_vector)
 
 
+# Data gen driver - takes a list of SMILES code (string representation of molecule), converts it to an RDKit molecule
+# object and uses those objects to generate a usable dataset
 def create_data_list(x_smiles, y):
     data_list = []
 
@@ -106,7 +112,6 @@ def create_data_list(x_smiles, y):
 
         EF = torch.tensor(EF, dtype=torch.float)
 
-        # construct label tensor
         y_tensor = torch.tensor(np.array([y_val]), dtype=torch.float)
 
         data_list.append(Data(x=X, edge_index=E, edge_attr=EF, y=y_tensor))

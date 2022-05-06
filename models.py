@@ -1,12 +1,7 @@
 import torch
 from torch import nn
-import torch.optim as optim
 import torch_geometric.nn as geom_nn
-from torch_geometric.nn import GATConv, Linear, to_hetero
-from torch_geometric.data import HeteroData
-
-from sklearn.metrics import classification_report
-
+from torch_geometric.nn import MemPooling
 
 
 gnn_layer_by_name = {
@@ -16,6 +11,8 @@ gnn_layer_by_name = {
 }
 
 
+# Model architecture of the Graph part of our network
+# Basic, but fully optimizeable by Optuna
 class GNNModel(torch.nn.Module):
 
     def __init__(self, c_in, c_hidden, c_out, num_layers=2, layer_name="GAT", dp_rate=0.1, **kwargs):
@@ -29,17 +26,12 @@ class GNNModel(torch.nn.Module):
                 gnn_layer(in_channels=in_channels,
                           out_channels=out_channels,
                           heads=2),
-                          # **kwargs),
                 geom_nn.norm.BatchNorm(out_channels*2),
                 nn.ReLU(inplace=True),
                 nn.Dropout(dp_rate)
             ]
             in_channels = out_channels * 2
             out_channels = in_channels
-        # layers += [gnn_layer(in_channels=in_channels,
-        #                      out_channels=out_channels,
-        #                      heads=2)]
-                             # **kwargs)]
         self.layers = nn.ModuleList(layers)
 
     def forward(self, x, edge_index):
@@ -51,8 +43,8 @@ class GNNModel(torch.nn.Module):
         return x
 
 
+# Appends Head to Graph model, interacts with Optuna directly
 class GraphGNNModel(nn.Module):
-
     def __init__(self, c_in, c_hidden, c_out, dp_rate_linear=0.5, dp_gnn=0.1, **kwargs):
         super().__init__()
         self.trial = None
@@ -75,38 +67,69 @@ class GraphGNNModel(nn.Module):
 
     def forward(self, x, edge_index, batch_idx):
         x = self.GNN(x, edge_index)
-        x = geom_nn.global_mean_pool(x, batch_idx) # TODO: learn more about pooling options
+        x = geom_nn.global_mean_pool(x, batch_idx)
         x = self.head(x)
         return x
 
 
-class MSPModel(geom_nn.MessagePassing):
-    def __init__(self, in_channels, out_channels):
-        super().__init__(aggr='add')  # "Add" aggregation (Step 5).
-        self.lin = torch.nn.Linear(in_channels, out_channels)
+# Ignore this - unfinished implementation of a Memory network
+class GATMem(torch.nn.Module):
+    def __init__(self, c_in, c_hidden, c_out, num_layers=2, layer_name="GAT", dp_rate=0.1, dp_rate_linear=0.3, **kwargs):
+        super().__init__()
+        gnn_layer = gnn_layer_by_name[layer_name]
+        self.n_classes=1
 
-    def forward(self, x, edge_index):
-        # x has shape [N, in_channels]
-        # edge_index has shape [2, E]
+        layers = []
+        in_channels, out_channels = c_in, c_hidden
+        for l_idx in range(kwargs['layers_soft']):
+            layers += [
+                gnn_layer(in_channels=in_channels,
+                          out_channels=out_channels,
+                          heads=2),
+                          # **kwargs),
+                geom_nn.norm.BatchNorm(out_channels*2),
+                nn.LeakyReLU(inplace=True),
+                nn.Dropout(dp_rate)
+            ]
+            in_channels = out_channels * 2
+            out_channels = in_channels
 
-        # Step 1: Add self-loops to the adjacency matrix.
-        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+        out_channels /= 2
+        layers += [MemPooling(in_channels=in_channels,
+                             out_channels=int(out_channels),
+                             heads=2,
+                             num_clusters=1),
+                    geom_nn.norm.BatchNorm(int(out_channels)),
+                    nn.LeakyReLU(inplace=True),
+                    nn.Dropout(dp_rate)]
 
-        # Step 2: Linearly transform node feature matrix.
-        x = self.lin(x)
+        in_channels = int(out_channels)
+        out_channels /= 2
 
-        # Step 3: Compute normalization.
-        row, col = edge_index
-        deg = degree(col, x.size(0), dtype=x.dtype)
-        deg_inv_sqrt = deg.pow(-0.5)
-        deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
-        norm = deg_inv_sqrt[row] * deg_inv_sqrt[col]
+        layers += [MemPooling(in_channels=in_channels,
+                             out_channels=int(out_channels),
+                             heads=2,
+                             num_clusters=1),
+                    geom_nn.norm.BatchNorm(int(out_channels)),
+                    nn.LeakyReLU(inplace=True),
+                    nn.Dropout(dp_rate)]
 
-        # Step 4-5: Start propagating messages.
-        return self.propagate(edge_index, x=x, norm=norm)
+        self.layers = nn.ModuleList(layers)
+        self.head = nn.Sequential(
+            nn.Dropout(dp_rate_linear),
+            nn.Linear(c_hidden * 2 ** kwargs['layers_soft'], 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dp_rate_linear),
+            nn.Linear(256, 1)
+        )
 
-    def message(self, x_j, norm):
-        # x_j has shape [E, out_channels]
-
-        # Step 4: Normalize node features.
-        return norm.view(-1, 1) * x_j
+    def forward(self, x, edge_index, batch_idx):
+        for l in self.layers:
+            if isinstance(l, geom_nn.MessagePassing):
+                x = l(x, edge_index)
+            elif isinstance(x, tuple):
+                x = l(torch.reshape(x[0], (1, -1)))
+            else:
+                x = l(x)
+        x = self.head(x)
+        return x

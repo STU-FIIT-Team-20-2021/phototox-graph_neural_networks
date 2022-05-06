@@ -1,103 +1,112 @@
-from ray.tune.suggest.optuna import OptunaSearch
-from ray.tune.suggest import ConcurrencyLimiter
-from ray.tune.schedulers import AsyncHyperBandScheduler
-from ray.tune.integration.pytorch_lightning import TuneReportCallback
-from ray import tune
+import torch
+import torch.nn as nn
+import optuna
+import wandb
+import pandas as pd
 
-import os
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
-from torch import nn
+from models import GraphGNNModel
+from train import setup_training, f1b_score
 
-from models import GraphLevelGNN
+df = pd.read_csv('./alvadesc_full_cleaned.csv', index_col=0)
+df = df.drop([345, 346], axis=0)
+df = df.drop_duplicates(subset=["Smiles"], keep=False)
 
+pre_df = pd.read_csv('./10k_smiles_scored.csv', sep='\t')
+pre_df = pre_df.drop_duplicates(subset=["Smiles"], keep=False)
 
-def train_graph_classifier(model_name, tr_loader, te_loader, v_loader, model=None, config=None, **model_kwargs):
-    pl.seed_everything(42)
-
-    if model is None:
-        model = GraphLevelGNN(c_in=79, c_out=1, config=config, **model_kwargs)
-
-    callbacks = [ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_acc"),
-                 EarlyStopping(monitor="val_loss", mode="min")]
-
-    if model:
-        callbacks = callbacks.append(TuneReportCallback(
-            {
-                "loss": "val_loss",
-                "mean_accuracy": "val_acc",
-                "sensitivity": "val_sensitivity",
-                "specificity": "val_specificity"
-            },
-            on="validation_end"))
-
-    root_dir = os.path.join('.', "GraphLevel" + model_name)
-    os.makedirs(root_dir, exist_ok=True)
-    trainer = pl.Trainer(default_root_dir=root_dir,
-                         callbacks=callbacks,
-                         accelerator="gpu",
-                         devices=1,
-                         max_epochs=200,
-                         progress_bar_refresh_rate=0)
-    trainer.logger._default_hp_metric = None
-
-    pl.seed_everything(42)
-    print(model)
-
-    trainer.fit(model, tr_loader, v_loader)
-    model = GraphLevelGNN.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
-
-    print('---------')
-    print(f'Testing {config}')
-    print('---------')
-    train_result = trainer.test(model, dataloaders=tr_loader, verbose=False)
-    val_result = trainer.test(model, dataloaders=v_loader, verbose=False)
-    test_result = trainer.test(model, dataloaders=te_loader, verbose=False)
-
-    tune.report(test_loss=test_result[0]['test_loss'], test_acc=test_result[0]['test_acc'], test_sensitivity=test_result[0]['test_sensitivity'], test_specificity=test_result[0]['test_specificity'],
-                val_loss=val_result[0]['test_loss'], val_acc=val_result[0]['test_acc'], val_sensitivity=val_result[0]['test_sensitivity'], val_specificity=val_result[0]['test_specificity'],)
-
-    result = {"test_acc": test_result[0]['test_acc'],
-              "test_sensitivity": test_result[0]['test_sensitivity'],
-              "test_specificity": test_result[0]['test_specificity'],
-              "train_acc": train_result[0]['test_acc'],
-              "train_sensitivity": train_result[0]['test_sensitivity'],
-              "train_specificity": train_result[0]['test_specificity']}
-    return model, result, trainer
+df = df[['Phototoxic', 'Smiles']]
+pre_df = pre_df[['Phototoxic', 'Smiles']]
 
 
-def train_model_both(config, train_loader, test_loader, val_loader, strong_train_loader, strong_val_loader, strong_test_loader):
 
-    model, result, trainer = train_graph_classifier(model_name="Tune",
-                                                    model=None,
-                                                    config=config,
-                                                    tr_loader=train_loader,
-                                                    te_loader=test_loader,
-                                                    v_loader=val_loader,
-                                                    c_hidden=config['c_hidden_soft'],
-                                                    layer_name=config['type'],
-                                                    num_layers=config['layers_soft'],
-                                                    dp_rate_linear=config['drop_rate_soft_dense'],
-                                                    dp_rate=config['drop_rate_soft'])
+# Specify this in setup to run an experiment without pretraining on weakly annotated data
+def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
+    name = f"GATv2__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+           f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
+           f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
+           f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
+    net = GraphGNNModel(80, config['c_hidden_soft'], config['c_hidden_soft'],
+                        dp_rate_linear=config['drop_rate_soft_dense'],
+                        dp_gnn=config['drop_rate_soft'], **config)
+
+    net.start_trial(trial)
+
+    try:
+        sensitivity, specificity = setup_training(config, f'./outputs/no_pretrain/Strong_{name}', df,
+                                                  wandb_name='Strong_'+name, net=net)
+        wandb.finish()
+    except optuna.TrialPruned:
+        raise optuna.TrialPruned()
+
+    return sensitivity, specificity
+
+
+
+# Default optimization mode
+# The model is first pre-trained by letting it run for 3 epochs on the weakly annotated dataset, then we the LR is
+# increased by a factor of 10 and the training is finished on the strongly annotated data
+def train_model_both(trial: optuna.trial.Trial, config: dict):
+    name = f"GATv2_final_f1b__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+           f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
+           f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
+           f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
+    setup_training(config, f'./outputs/final_f1b/{name}', pre_df, wandb_name=name, pretrain=True)
+    wandb.finish()
+    last = f'./outputs/final_f1b/{name}/checkpoint.pth'
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    net = GraphGNNModel(80, config['c_hidden_soft'], config['c_hidden_soft'],
+                        dp_rate_linear=config['drop_rate_soft_dense'],
+                        dp_gnn=config['drop_rate_soft'], **config)
+    net.load_state_dict(torch.load(last, map_location=device))
 
     new_head = nn.Sequential(
-        nn.Dropout(config['drop_rate_hard_dense']),
-        nn.Linear(config['c_hidden_soft'], 1)
+        nn.Dropout(config['drop_rate_hard_dense_1']),
+        nn.Linear(config['c_hidden_soft'] * 2 ** config['layers_soft'], 256),
+        nn.ReLU(inplace=True),
+        nn.Dropout(config['drop_rate_hard_dense_2']),
+        nn.Linear(256, 1)
     )
 
-    for param in model.parameters():
-        param.requires_grad = False
+    # Not freezing the graph layers worked out better than just replacing the head
+    # for param in net.parameters():
+    #     param.requires_grad = False
 
-    list(model.children())[0].head = new_head
+    list(net.children())[0].head = new_head
+    net.start_trial(trial)
 
-    model, result, trainer = train_graph_classifier(model_name="Tune_strong",
-                                                    model=model,
-                                                    tr_loader=strong_train_loader,
-                                                    te_loader=strong_test_loader,
-                                                    v_loader=strong_val_loader,
-                                                    c_hidden=config['c_hidden_soft'],
-                                                    layer_name=config['type'],
-                                                    num_layers=config['layers_soft'],
-                                                    dp_rate_linear=config['drop_rate_soft_dense'],
-                                                    dp_rate=config['drop_rate_soft'])
-    return model, result, trainer
+    try:
+        sensitivity, specificity = setup_training(config, f'./outputs/final_f1b/Strong_{name}', df,
+                                                  wandb_name='Strong_'+name, net=net)
+        wandb.finish()
+    except optuna.TrialPruned:
+        raise optuna.TrialPruned()
+
+    return sensitivity, specificity
+
+
+# Optuna controller - finds best parameters from specified ranges - also optimizes number of layers
+# Trials are pruned based on f1b_score if optuna doesn't think the run will result in an improvement, to reduce
+# training time
+def setup(trial: optuna.trial.Trial):
+
+    a = trial.suggest_int('dense_input_head', 5, 11)
+    b = trial.suggest_int('dense_input_hidden', 3, a)
+
+    config = {
+        'c_hidden_soft': trial.suggest_int('c_hidden_soft', 128, 384),
+        'layers_soft': trial.suggest_int('layers_soft', 2, 5),
+        'drop_rate_soft_dense': trial.suggest_uniform('drop_rate_soft_dense', 0.05, 0.5),
+        'drop_rate_soft': trial.suggest_uniform('drop_rate_soft', 0.05, 0.5),
+        'drop_rate_hard_dense_1': trial.suggest_uniform('drop_rate_hard_dense_1', 0.05, 0.5),
+        'drop_rate_hard_dense_2': trial.suggest_uniform('drop_rate_hard_dense_2', 0.05, 0.5),
+        'dense_input_head': 2 ** a,
+        'dense_input_hidden': 2 ** b,
+        'pos_weight': trial.suggest_uniform('pos_weight', 1.0, 1.7),
+        'optim': trial.suggest_categorical('optim', ["Adam", "RMSprop", "SGD"]),
+        'lr': trial.suggest_loguniform('lr', 1e-5, 1e-2),
+        'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256, 512])
+    }
+
+    sensitivity, specificity = train_model_both(trial, config)
+
+    return f1b_score(sensitivity, specificity)

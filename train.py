@@ -1,31 +1,29 @@
-import argparse
-import glob
 import logging
-import sys
-from pathlib import Path
 import os
 import optuna
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch_geometric.data as geom_data
 import wandb
 import numpy as np
 import pandas as pd
+
 from torch import optim
-from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from data_utils import create_data_list
-
+from pathlib import Path
 from models import GraphGNNModel
 from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 
 
+# Custom scoring function that penalizes model bias - the score improves if sensitivity and specificity grow, but it
+# penalizes one-sided growth, i.e. increasing the difference between sensitivity and specificity
 def f1b_score(sensitivity, specificity, beta=0.5):
-    return (1 + beta ** 2) * (sensitivity * specificity) / (beta ** 2 * sensitivity + specificity)
-
+    try:
+        return (1 + beta ** 2) * (sensitivity * specificity) / (beta ** 2 * sensitivity + specificity)
+    except ZeroDivisionError:
+        return 0.0
 
 def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_name: str, net: nn.Module = None, pretrain: bool = False):
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
@@ -34,10 +32,10 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                             dp_gnn=config['drop_rate_soft'],**config)
     net.to(device)
 
-    if not os.path.exists(f'./GATv2/no_freeze_f1loss/{wandb_name}'):
-        os.mkdir(f'./GATv2/no_freeze_f1loss/{wandb_name}')
+    if not os.path.exists(f'./outputs/final_f1b/{wandb_name}'):
+        os.mkdir(f'./outputs/final_f1b/{wandb_name}')
 
-    experiment = wandb.init(project='TP-GATv2', resume='allow', name=wandb_name, group='no_freeze_f1loss',
+    experiment = wandb.init(project='TP-GATv2', resume='allow', name=wandb_name, group='final_f1b',
                             config={
                                 "learning_rate": config['lr'],
                                 "batch_size": config['batch_size'],
@@ -45,8 +43,13 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
                                 "save_checkpoint": save_checkpoint,
                             })
 
-    return train_net(net, device, epochs=500, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
-                     df=df, opt=config['optim'], dir_checkpoint=f'./GATv2/no_freeze_f1loss/{wandb_name}', pos_weight=config['pos_weight'],
+    if pretrain:
+        epochs = 3
+    else:
+        epochs = 500
+
+    return train_net(net, device, epochs=epochs, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
+                     df=df, opt=config['optim'], dir_checkpoint=f'./outputs/final_f1b/{wandb_name}', pos_weight=config['pos_weight'],
                      pretrain=pretrain)
 
 
@@ -63,18 +66,16 @@ def train_net(net,
               experiment = None,
               pos_weight: float = 1.0,
               early_stopping_patience: int = 5,
-              pretrain: bool = False,
-              l1_lambda: float = 0):
+              pretrain: bool = False):
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-    # experiment.watch(net, log_freq=10, log='all')
 
     data_list = create_data_list(df['Smiles'], df['Phototoxic'])
     if not pretrain:
         train, test = train_test_split(data_list, test_size=0.2, stratify=[t.y for t in data_list], random_state=42)
     else:
         train, test = train_test_split(data_list, test_size=0.1, stratify=[t.y for t in data_list], random_state=42)
-    train, valid = train_test_split(train, test_size=0.15, stratify=[t.y for t in train], random_state=42)
+    train, valid = train_test_split(train, test_size=0.12, stratify=[t.y for t in train], random_state=42)
 
     n_train = len(train)
     n_val = len(valid)
@@ -107,8 +108,6 @@ def train_net(net,
     elif opt == 'SGD':
         optimizer = optim.SGD([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
 
-    # TODO: Decide if we want this
-    # scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     if net.n_classes == 1:
@@ -117,10 +116,10 @@ def train_net(net,
         criterion = nn.CrossEntropyLoss()
     global_step = 0
 
-    # 5. Begin training
     prev_best = np.inf
     epochs_since_improvement = 0
     val_sensitivities, val_specificities = [], []
+    # Basic PyTorch training loop - I feel like there's no need to specify further
     for epoch in range(epochs):
         train_loss_total = 0
         val_loss_total = 0
@@ -138,8 +137,6 @@ def train_net(net,
                     if net.n_classes == 1:
                         pred = pred.squeeze(dim=-1)
 
-                    # if not pretrain:
-                    #     pred.requires_grad = True
                     loss = criterion(pred, batch.y)
                     pred = (torch.sigmoid(pred).data.float() > 0.5).float().cpu().numpy()
                     try:
@@ -157,14 +154,6 @@ def train_net(net,
                         specificity = 1e-8
 
                     loss += (1 - f1b_score(sensitivity=sensitivity, specificity=specificity))
-
-
-                # l1_norm = 0
-                # for layer in [net.medium_spring_1, net.medium_spring_2, net.up_2, net.large_spring_1,
-                #               net.large_spring_2, net.fc1, net.fc2]:
-                #     l1_norm += l1_lambda * sum(p.abs().sum() for p in layer.parameters())
-                #
-                # loss += l1_norm
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -200,12 +189,6 @@ def train_net(net,
                                 preds = preds.squeeze(dim=-1)
 
                             val_loss = criterion(preds, batch.y)
-
-                        # l1_norm = 0
-                        # for layer in [net.medium_spring_1, net.medium_spring_2, net.up_2, net.large_spring_1,
-                        #               net.large_spring_2, net.fc1, net.fc2]:
-                        #     l1_norm += l1_lambda * sum(p.abs().sum() for p in layer.parameters())
-
 
 
                         preds = (torch.sigmoid(preds).data.float() > 0.5).float().cpu().numpy()
@@ -254,7 +237,6 @@ def train_net(net,
                     wandb.finish()
                     raise optuna.TrialPruned()
 
-        # scheduler.step()
         epochs_since_improvement += 1
         if save_checkpoint and val_loss < prev_best:
             epochs_since_improvement = 0
