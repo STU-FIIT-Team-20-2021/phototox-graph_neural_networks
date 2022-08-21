@@ -82,7 +82,6 @@ def create_data_list(x_smiles, y):
     data_list = []
 
     for (smiles, y_val) in zip(x_smiles, y):
-
         mol = Chem.MolFromSmiles(smiles)
 
         n_nodes = mol.GetNumAtoms()
