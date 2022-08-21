@@ -7,21 +7,21 @@ import pandas as pd
 from models import GraphGNNModel
 from train import setup_training, f1b_score
 
-df = pd.read_csv('./alvadesc_full_cleaned.csv', index_col=0)
-df = df.drop([345, 346], axis=0)
-df = df.drop_duplicates(subset=["Smiles"], keep=False)
+df = pd.read_csv('./mutagenicity.csv', sep=',')
+# df = df.drop([345, 346], axis=0)
+# df = df.drop_duplicates(subset=["Smiles"], keep=False)
 
-pre_df = pd.read_csv('./10k_smiles_scored.csv', sep='\t')
-pre_df = pre_df.drop_duplicates(subset=["Smiles"], keep=False)
+# pre_df = pd.read_csv('./10k_smiles_scored.csv', sep='\t')
+# pre_df = pre_df.drop_duplicates(subset=["Smiles"], keep=False)
 
 df = df[['Phototoxic', 'Smiles']]
-pre_df = pre_df[['Phototoxic', 'Smiles']]
+# pre_df = pre_df[['Phototoxic', 'Smiles']]
 
 
 
 # Specify this in setup to run an experiment without pretraining on weakly annotated data
 def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
-    name = f"GATv2__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
+    name = f"Mutagenicity__chs={config['c_hidden_soft']}_ls={config['layers_soft']}_drsd={config['drop_rate_soft_dense']}_" \
            f"drs={config['drop_rate_soft']}_drhd1={config['drop_rate_hard_dense_1']}_drhd2={config['drop_rate_hard_dense_2']}_" \
            f"dih={config['dense_input_head']}_dihidden={config['dense_input_hidden']}_optim={config['optim']}_" \
            f"lr={config['lr']}_batchsize={config['batch_size']}_posweight={config['pos_weight']}"
@@ -32,7 +32,7 @@ def train_no_pretrain(trial: optuna.trial.Trial, config: dict):
     net.start_trial(trial)
 
     try:
-        sensitivity, specificity = setup_training(config, f'./outputs/no_pretrain/Strong_{name}', df,
+        sensitivity, specificity = setup_training(config, f'./outputs/mutagenicity/Strong_{name}', df,
                                                   wandb_name='Strong_'+name, net=net)
         wandb.finish()
     except optuna.TrialPruned:
@@ -107,6 +107,6 @@ def setup(trial: optuna.trial.Trial):
         'batch_size': trial.suggest_categorical('batch_size', [64, 128, 256, 512])
     }
 
-    sensitivity, specificity = train_model_both(trial, config)
+    sensitivity, specificity = train_no_pretrain(trial, config)
 
     return f1b_score(sensitivity, specificity)

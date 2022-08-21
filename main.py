@@ -46,4 +46,4 @@ if __name__ == "__main__":
         sampler=optuna.samplers.TPESampler(),
         directions=["maximize"])
 
-    study.optimize(setup, n_trials=100, timeout=None)
+    study.optimize(setup, n_trials=50, timeout=None)

@@ -35,18 +35,18 @@ def setup_training(config: dict, save_checkpoint: str, df: pd.DataFrame, wandb_n
     if not os.path.exists(f'./outputs/final_f1b/{wandb_name}'):
         os.mkdir(f'./outputs/final_f1b/{wandb_name}')
 
-    experiment = wandb.init(project='TP-GATv2', resume='allow', name=wandb_name, group='final_f1b',
+    experiment = wandb.init(project='TP-Mutagenicity', resume='allow', name=wandb_name, group='intro',
                             config={
                                 "learning_rate": config['lr'],
                                 "batch_size": config['batch_size'],
-                                "epochs": 500,
+                                "epochs": 100,
                                 "save_checkpoint": save_checkpoint,
                             })
 
     if pretrain:
         epochs = 3
     else:
-        epochs = 500
+        epochs = 100
 
     return train_net(net, device, epochs=epochs, batch_size=config['batch_size'], learning_rate=config['lr'], experiment=experiment,
                      df=df, opt=config['optim'], dir_checkpoint=f'./outputs/final_f1b/{wandb_name}', pos_weight=config['pos_weight'],
@@ -72,7 +72,7 @@ def train_net(net,
 
     data_list = create_data_list(df['Smiles'], df['Phototoxic'])
     if not pretrain:
-        train, test = train_test_split(data_list, test_size=0.2, stratify=[t.y for t in data_list], random_state=42)
+        train, test = train_test_split(data_list, test_size=0.1, stratify=[t.y for t in data_list], random_state=42)
     else:
         train, test = train_test_split(data_list, test_size=0.1, stratify=[t.y for t in data_list], random_state=42)
     train, valid = train_test_split(train, test_size=0.12, stratify=[t.y for t in train], random_state=42)
@@ -98,8 +98,8 @@ def train_net(net,
         Mixed Precision: {amp}
     ''')
 
-    if not pretrain:
-        learning_rate *= 10
+    # if not pretrain:
+    #     learning_rate *= 10
 
     if opt == 'Adam':
         optimizer = optim.Adam([p for p in net.parameters() if p.requires_grad], lr=learning_rate)
